@@ -1,0 +1,17 @@
+{
+  "name": "bot-financas-telegram",
+  "version": "1.0.0",
+  "description": "Bot de controle financeiro para Telegram",
+  "main": "telegram-sheets-bot.js",
+  "scripts": {
+    "start": "node telegram-sheets-bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "googleapis": "^100.0.0",
+    "moment": "^2.29.1",
+    "telegraf": "^4.7.0",
+    "express": "^4.17.1",
+    "body-parser": "^1.19.0"
+  }
+}
