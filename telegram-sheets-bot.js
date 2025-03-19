@@ -1,9 +1,11 @@
-// Código para Bot de Finanças - Integração Telegram e Google Sheets
+// Bot de Controle Financeiro com ML e Gastos Compartilhados
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { google } = require('googleapis');
 const moment = require('moment');
 moment.locale('pt-br');
+const express = require('express');
+const bodyParser = require('body-parser');
 
 // Logs de inicialização
 console.log('Iniciando o bot de finanças...');
@@ -11,25 +13,31 @@ console.log('Iniciando o bot de finanças...');
 // Configurações do Bot Telegram
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// Categorias de despesas e suas palavras-chave
+// Categorias de despesas e suas palavras-chave (ampliadas para treinamento ML)
 const categorias = {
-  'mercado': ['mercado', 'supermercado', 'feira', 'frutas', 'alimentos', 'comida'],
-  'transporte': ['transporte', 'gasolina', 'uber', 'táxi', 'ônibus', 'metrô', 'combustível'],
-  'lazer': ['lazer', 'restaurante', 'cinema', 'teatro', 'show', 'viagem'],
-  'saúde': ['saúde', 'farmácia', 'remédio', 'médico', 'consulta', 'exame'],
-  'educação': ['educação', 'livro', 'curso', 'escola', 'faculdade'],
-  'moradia': ['moradia', 'aluguel', 'condomínio', 'água', 'luz', 'internet', 'gás'],
-  'outros': ['outros']
+  'mercado': ['mercado', 'supermercado', 'feira', 'frutas', 'alimentos', 'comida', 'hortifruti', 'açougue', 'padaria', 'pão', 'leite', 'carne', 'verdura', 'legume', 'cereal'],
+  'transporte': ['transporte', 'gasolina', 'uber', 'táxi', '99', 'cabify', 'ônibus', 'metrô', 'combustível', 'estacionamento', 'pedágio', 'passagem', 'bilhete', 'brt', 'trem'],
+  'lazer': ['lazer', 'restaurante', 'cinema', 'teatro', 'show', 'viagem', 'bar', 'bebida', 'cerveja', 'festa', 'passeio', 'ingresso', 'parque', 'shopping', 'lanche', 'netflix', 'streaming'],
+  'saúde': ['saúde', 'farmácia', 'remédio', 'médico', 'consulta', 'exame', 'hospital', 'dentista', 'terapia', 'academia', 'vitamina', 'suplemento', 'plano de saúde', 'psicólogo'],
+  'educação': ['educação', 'livro', 'curso', 'escola', 'faculdade', 'mensalidade', 'material escolar', 'apostila', 'aula', 'professor', 'treinamento', 'workshop', 'certificado'],
+  'moradia': ['moradia', 'aluguel', 'condomínio', 'água', 'luz', 'internet', 'gás', 'iptu', 'reforma', 'mobília', 'móveis', 'decoração', 'cama', 'sofá', 'eletrodomésticos'],
+  'vestuário': ['roupa', 'calçado', 'sapato', 'tênis', 'camisa', 'calça', 'vestido', 'acessório', 'bolsa', 'moda'],
+  'pet': ['pet', 'animal', 'cachorro', 'gato', 'ração', 'veterinário', 'petshop', 'brinquedo pet', 'remédio pet'],
+  'outros': ['outros', 'diverso', 'presente', 'doação', 'serviço']
 };
 
 // Categorias de ganhos e suas palavras-chave
 const categoriasGanhos = {
-  'salário': ['salário', 'salario', 'pagamento', 'contracheque', 'holerite', 'folha'],
-  'freelance': ['freelance', 'freela', 'projeto', 'job'],
-  'investimentos': ['investimento', 'rendimento', 'dividendo', 'aplicação', 'juros'],
-  'presente': ['presente', 'bônus', 'bonus', 'prêmio', 'premio', 'doação'],
-  'outros': ['outros']
+  'salário': ['salário', 'salario', 'pagamento', 'contracheque', 'holerite', 'folha', 'remuneração', 'ordenado'],
+  'freelance': ['freelance', 'freela', 'projeto', 'job', 'trabalho extra', 'serviço prestado', 'consultoria'],
+  'investimentos': ['investimento', 'rendimento', 'dividendo', 'aplicação', 'juros', 'ação', 'renda fixa', 'tesouro', 'aluguel'],
+  'presente': ['presente', 'bônus', 'bonus', 'prêmio', 'premio', 'doação', 'regalo', 'gratificação'],
+  'reembolso': ['reembolso', 'restituição', 'devolução', 'estorno', 'cashback'],
+  'outros': ['outros', 'diverso', 'entrada', 'recebimento']
 };
+
+// Pessoas para gastos compartilhados
+const pessoasCompartilhamento = ['esposa', 'esposo', 'namorada', 'namorado', 'mulher', 'marido', 'companheiro', 'companheira', 'amigo', 'amiga', 'colega', 'parceiro', 'parceira', 'cônjuge', 'conjuge'];
 
 // Mapeamento de meses para números
 const mesesMap = {
@@ -39,42 +47,122 @@ const mesesMap = {
   'outubro': 9, 'out': 9, 'novembro': 10, 'nov': 10, 'dezembro': 11, 'dez': 11
 };
 
-// IMPORTANTE: Use um nome de planilha sem caracteres especiais
 // Configuração do Google Sheets
 const sheets = google.sheets({ version: 'v4' });
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-// Mudamos de "Finanças!A:F" para "Financas!A:F" (sem acento)
-const RANGE = 'Despesas!A:F';
+const RANGE = 'Despesas!A:G'; // Adicionada coluna G para gastos compartilhados
 
 // Autenticação com o Google
 async function authorize() {
+  // Certifique-se de que a chave privada tenha quebras de linha adequadas
+  const privateKey = process.env.GOOGLE_PRIVATE_KEY
+    ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    : '';
+
   const auth = new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
     null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    privateKey,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
   return auth;
 }
 
-// Classificar a categoria baseada no texto da mensagem
-function classificarCategoria(texto, tipo) {
-  texto = texto.toLowerCase();
+// ====== MODELO ML PARA CLASSIFICAÇÃO DE CATEGORIAS ======
 
+// Função para calcular similaridade entre strings (algoritmo Jaccard)
+function calcularSimilaridade(texto1, texto2) {
+  // Normaliza os textos: remove acentos, converte para minúsculas e divide em palavras
+  const normalizar = (texto) => {
+    return texto.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .split(/\s+/)
+      .filter(palavra => palavra.length > 2);
+  };
+
+  const palavras1 = new Set(normalizar(texto1));
+  const palavras2 = new Set(normalizar(texto2));
+
+  // Cálculo do coeficiente de Jaccard
+  const intersecao = new Set([...palavras1].filter(p => palavras2.has(p)));
+  const uniao = new Set([...palavras1, ...palavras2]);
+
+  if (uniao.size === 0) return 0;
+  return intersecao.size / uniao.size;
+}
+
+// Função para classificar categoria usando "ML" (similaridade de texto)
+function classificarCategoriaML(texto, tipo) {
+  texto = texto.toLowerCase();
   const categoriasAlvo = tipo === 'Ganho' ? categoriasGanhos : categorias;
 
+  // Primeiro vamos verificar palavras-chave diretas
   for (const [categoria, keywords] of Object.entries(categoriasAlvo)) {
     for (const keyword of keywords) {
       if (texto.includes(keyword)) {
-        return categoria;
+        return { categoria, confianca: 0.9 }; // Alta confiança para correspondências diretas
       }
     }
   }
 
-  return 'outros'; // Categoria padrão
+  // Se não encontrar correspondência direta, usa similaridade de texto
+  let melhorCategoria = 'outros';
+  let maiorSimilaridade = 0;
+
+  for (const [categoria, keywords] of Object.entries(categoriasAlvo)) {
+    // Junta todas as palavras-chave da categoria
+    const textoCategoria = keywords.join(' ');
+
+    // Calcula similaridade
+    const similaridade = calcularSimilaridade(texto, textoCategoria);
+
+    if (similaridade > maiorSimilaridade) {
+      maiorSimilaridade = similaridade;
+      melhorCategoria = categoria;
+    }
+  }
+
+  return {
+    categoria: melhorCategoria,
+    confianca: maiorSimilaridade
+  };
 }
 
-// Extrair valor da mensagem
+// ====== PROCESSAMENTO DE GASTOS COMPARTILHADOS ======
+
+// Verifica se a transação é compartilhada e com quem
+function verificarCompartilhamento(texto) {
+  texto = texto.toLowerCase();
+
+  // Padrões para detectar gastos compartilhados
+  const padroesCompartilhamento = [
+    'com minha', 'com meu', 'junto com', 'dividido com', 'dividindo com',
+    'compartilhado', 'compartilhada', 'dividimos', 'compartilhamos'
+  ];
+
+  // Verifica se algum padrão está presente
+  const éCompartilhado = padroesCompartilhamento.some(padrao => texto.includes(padrao));
+
+  if (!éCompartilhado) {
+    return { compartilhado: false, pessoa: null };
+  }
+
+  // Tenta identificar com quem é compartilhado
+  let pessoaIdentificada = null;
+  for (const pessoa of pessoasCompartilhamento) {
+    if (texto.includes(pessoa)) {
+      pessoaIdentificada = pessoa;
+      break;
+    }
+  }
+
+  return {
+    compartilhado: true,
+    pessoa: pessoaIdentificada || 'não especificado'
+  };
+}
+
+// Extrai valor da mensagem
 function extrairValor(texto) {
   const regex = /(\d+[.,]?\d*)/g;
   const matches = texto.match(regex);
@@ -188,12 +276,22 @@ function extrairPeriodo(texto) {
 }
 
 // Registrar transação no Google Sheets
-async function registrarTransacao(data, categoria, valor, descricao, tipo) {
+async function registrarTransacao(data, categoria, valor, descricao, tipo, infoCompartilhamento = null) {
   const auth = await authorize();
   const dataFormatada = moment(data).format('DD/MM/YYYY');
 
+  // Calcula o valor registrado - se for compartilhado, divide por 2
+  const valorRegistrado = infoCompartilhamento && infoCompartilhamento.compartilhado
+    ? valor / 2
+    : valor;
+
+  // Prepara informação de compartilhamento
+  const compartilhamentoInfo = infoCompartilhamento && infoCompartilhamento.compartilhado
+    ? `Compartilhado com ${infoCompartilhamento.pessoa}`
+    : "";
+
   const values = [
-    [dataFormatada, categoria, valor, descricao, tipo]
+    [dataFormatada, categoria, valorRegistrado, descricao, tipo, compartilhamentoInfo, valor]
   ];
 
   const resource = {
@@ -240,6 +338,8 @@ async function obterTransacoes() {
         const valorCell = rows[i][2];
         const descricaoCell = rows[i][3] || '';
         const tipoCell = rows[i][4] || 'Despesa'; // Default para compatibilidade
+        const compartilhamentoCell = rows[i][5] || '';
+        const valorOriginalCell = rows[i][6] || valorCell; // Valor antes da divisão, se aplicável
 
         // Converter data do formato DD/MM/YYYY para objeto Date
         const [dia, mes, ano] = dataCell.split('/').map(num => parseInt(num));
@@ -247,14 +347,17 @@ async function obterTransacoes() {
 
         // Converter valor para número
         const valor = parseFloat(valorCell);
+        const valorOriginal = parseFloat(valorOriginalCell);
 
         if (data.isValid() && !isNaN(valor)) {
           transacoes.push({
             data: data,
             categoria: categoriaCell.toLowerCase(),
             valor: valor,
+            valorOriginal: valorOriginal,
             descricao: descricaoCell,
-            tipo: tipoCell
+            tipo: tipoCell,
+            compartilhamento: compartilhamentoCell
           });
         }
       }
@@ -268,19 +371,15 @@ async function obterTransacoes() {
 }
 
 // Filtrar transações por período, tipo e categoria
-function filtrarTransacoes(transacoes, periodo, tipo = null, categoria = null) {
+function filtrarTransacoes(transacoes, periodo, tipo = null, categoria = null, apenasCompartilhadas = false) {
   return transacoes.filter(t => {
     const dataMatch = t.data.isBetween(periodo.inicio, periodo.fim, null, '[]');
     const tipoMatch = tipo ? t.tipo === tipo : true;
     const categoriaMatch = categoria ? t.categoria === categoria.toLowerCase() : true;
+    const compartilhamentoMatch = apenasCompartilhadas ? t.compartilhamento !== "" : true;
 
-    return dataMatch && tipoMatch && categoriaMatch;
+    return dataMatch && tipoMatch && categoriaMatch && compartilhamentoMatch;
   });
-}
-
-// Calcular total de transações
-function calcularTotal(transacoes) {
-  return transacoes.reduce((acc, t) => acc + t.valor, 0).toFixed(2);
 }
 
 // Analisar consulta para extrair informações relevantes
@@ -289,7 +388,8 @@ function analisarConsulta(texto) {
   let consulta = {
     tipo: null,       // 'Ganho', 'Despesa', null (ambos)
     categoria: null,  // categoria específica ou null (todas)
-    periodo: extrairPeriodo(texto)
+    periodo: extrairPeriodo(texto),
+    apenasCompartilhadas: texto.includes('compartilhad') || texto.includes('dividid') || texto.includes('conjunt')
   };
 
   // Determinar tipo: ganho ou despesa
@@ -341,7 +441,8 @@ async function processarConsulta(texto) {
     transacoes,
     consulta.periodo,
     consulta.tipo,
-    consulta.categoria
+    consulta.categoria,
+    consulta.apenasCompartilhadas
   );
 
   if (transacoesFiltradas.length === 0) {
@@ -358,11 +459,16 @@ async function processarConsulta(texto) {
       mensagem += ` na categoria "${consulta.categoria}"`;
     }
 
+    if (consulta.apenasCompartilhadas) {
+      mensagem += ` compartilhada`;
+    }
+
     mensagem += ` em ${consulta.periodo.desc}.`;
     return mensagem;
   }
 
   const total = calcularTotal(transacoesFiltradas);
+  const totalOriginal = calcularTotalOriginal(transacoesFiltradas);
 
   // Formatar resposta básica
   let resposta = '';
@@ -372,11 +478,16 @@ async function processarConsulta(texto) {
       resposta += `💰 Você recebeu R$ ${total}`;
     } else {
       resposta += `💸 Você gastou R$ ${total}`;
+
+      // Se houver gastos compartilhados, mostrar o valor total antes da divisão
+      if (consulta.apenasCompartilhadas || transacoesFiltradas.some(t => t.compartilhamento !== "")) {
+        resposta += ` (valor total antes da divisão: R$ ${totalOriginal})`;
+      }
     }
   } else {
     // Consulta de saldo
-    const ganhos = filtrarTransacoes(transacoes, consulta.periodo, 'Ganho');
-    const despesas = filtrarTransacoes(transacoes, consulta.periodo, 'Despesa');
+    const ganhos = filtrarTransacoes(transacoes, consulta.periodo, 'Ganho', null, consulta.apenasCompartilhadas);
+    const despesas = filtrarTransacoes(transacoes, consulta.periodo, 'Despesa', null, consulta.apenasCompartilhadas);
 
     const totalGanhos = calcularTotal(ganhos);
     const totalDespesas = calcularTotal(despesas);
@@ -391,11 +502,21 @@ async function processarConsulta(texto) {
       `• Despesas: R$ ${totalDespesas}\n` +
       `• Saldo: R$ ${saldo}`;
 
+    if (consulta.apenasCompartilhadas) {
+      resposta = `${emoji} *Resumo de gastos compartilhados em ${consulta.periodo.desc}:*\n\n` +
+        `• Sua parte: R$ ${totalDespesas}\n` +
+        `• Valor total: R$ ${calcularTotalOriginal(despesas)}`;
+    }
+
     return resposta;
   }
 
   if (consulta.categoria) {
     resposta += ` na categoria "${consulta.categoria}"`;
+  }
+
+  if (consulta.apenasCompartilhadas) {
+    resposta += ` (gastos compartilhados)`;
   }
 
   resposta += ` em ${consulta.periodo.desc}.`;
@@ -424,9 +545,27 @@ async function processarConsulta(texto) {
         resposta += `\n• ${cat}: R$ ${val.toFixed(2)}`;
       });
     }
+
+    // Adicionar resumo de gastos compartilhados se relevante
+    const transacoesCompartilhadas = transacoesFiltradas.filter(t => t.compartilhamento !== "");
+    if (transacoesCompartilhadas.length > 0 && !consulta.apenasCompartilhadas) {
+      resposta += '\n\n*Gastos compartilhados:*';
+      resposta += `\n• Sua parte: R$ ${calcularTotal(transacoesCompartilhadas)}`;
+      resposta += `\n• Valor total: R$ ${calcularTotalOriginal(transacoesCompartilhadas)}`;
+    }
   }
 
   return resposta;
+}
+
+// Calcular total de transações
+function calcularTotal(transacoes) {
+  return transacoes.reduce((acc, t) => acc + t.valor, 0).toFixed(2);
+}
+
+// Calcular total original (antes da divisão) de transações
+function calcularTotalOriginal(transacoes) {
+  return transacoes.reduce((acc, t) => acc + (t.valorOriginal || t.valor), 0).toFixed(2);
 }
 
 // Comandos do Bot
@@ -435,6 +574,8 @@ bot.start((ctx) => {
     'Como usar:\n' +
     '- Para registrar uma despesa, envie uma mensagem como:\n' +
     '  "hoje gastei 300 reais com compras de mercado"\n\n' +
+    '- Para registrar um gasto compartilhado:\n' +
+    '  "gastei 100 reais no restaurante com minha esposa"\n\n' +
     '- Para registrar um ganho, envie uma mensagem como:\n' +
     '  "recebi 2000 reais de salário hoje"\n\n' +
     '- Para consultas flexíveis:\n' +
@@ -444,17 +585,20 @@ bot.start((ctx) => {
     '  "quanto gastei ontem"\n' +
     '  "quanto gastei com transporte esta semana"\n' +
     '  "quanto gastei no dia 15/03"\n' +
-    '  "qual o total de despesas este ano"');
+    '  "gastos compartilhados do mês"\n' +
+    '  "quanto gastei com minha esposa este mês"');
 });
 
 bot.help((ctx) => {
   ctx.reply('Comandos disponíveis:\n\n' +
     '- Registrar despesa: "gastei X com Y"\n' +
+    '- Registrar gasto compartilhado: "gastei X com minha esposa"\n' +
     '- Registrar ganho: "recebi X de Y"\n' +
     '- Consultas flexíveis:\n' +
     '  • Por período: "hoje", "ontem", "esta semana", "março", "em 2023"\n' +
     '  • Por categoria: "em mercado", "com transporte", "de salário"\n' +
     '  • Por tipo: "gastei", "ganhei", "saldo"\n' +
+    '  • Gastos compartilhados: "gastos compartilhados", "com minha esposa"\n' +
     '  • Por data específica: "no dia 20/03", "em 15/12/2023"\n' +
     '  • Combinados: "quanto gastei com mercado em dezembro"');
 });
@@ -478,13 +622,39 @@ bot.hears(/gastei|gasto|comprei|paguei|despesa/i, async (ctx) => {
 
   // É um registro de despesa
   const valor = extrairValor(texto);
-  const categoria = classificarCategoria(texto, 'Despesa');
+
+  // Verificar se é um gasto compartilhado
+  const infoCompartilhamento = verificarCompartilhamento(texto);
+
+  // Usar ML para classificar a categoria
+  const classificacaoML = classificarCategoriaML(texto, 'Despesa');
+  const categoria = classificacaoML.categoria;
+  const confianca = classificacaoML.confianca;
+
   const data = new Date();
 
   if (valor > 0) {
     try {
-      await registrarTransacao(data, categoria, valor, texto, 'Despesa');
-      ctx.reply(`✅ Despesa de R$ ${valor.toFixed(2)} registrada na categoria "${categoria}"`);
+      await registrarTransacao(data, categoria, valor, texto, 'Despesa', infoCompartilhamento);
+
+      let mensagem = `✅ Despesa de R$ ${valor.toFixed(2)} registrada na categoria "${categoria}"`;
+
+      // Adicionar informação sobre compartilhamento, se aplicável
+      if (infoCompartilhamento.compartilhado) {
+        const valorDividido = (valor / 2).toFixed(2);
+        mensagem = `✅ Despesa compartilhada registrada!\n\n` +
+          `💰 Valor total: R$ ${valor.toFixed(2)}\n` +
+          `💸 Sua parte: R$ ${valorDividido}\n` +
+          `👥 Compartilhado com: ${infoCompartilhamento.pessoa}\n` +
+          `🏷️ Categoria: ${categoria}`;
+      }
+
+      // Se a confiança na classificação for baixa, indicar isso na resposta
+      if (confianca < 0.3 && !infoCompartilhamento.compartilhado) {
+        mensagem += `\n\n(Categorizado automaticamente com base no texto. Use "despesa de mercado" para ser mais específico)`;
+      }
+
+      ctx.reply(mensagem);
     } catch (error) {
       ctx.reply('❌ Erro ao registrar despesa. Tente novamente com outro formato ou verifique a configuração da planilha.');
       console.error('Erro detalhado:', error);
@@ -513,19 +683,52 @@ bot.hears(/recebi|ganhei|entrou|depositou|salário|salario|rendimento|recebiment
 
   // É um registro de ganho
   const valor = extrairValor(texto);
-  const categoria = classificarCategoria(texto, 'Ganho');
+
+  // Usar ML para classificar a categoria
+  const classificacaoML = classificarCategoriaML(texto, 'Ganho');
+  const categoria = classificacaoML.categoria;
+  const confianca = classificacaoML.confianca;
+
   const data = new Date();
 
   if (valor > 0) {
     try {
       await registrarTransacao(data, categoria, valor, texto, 'Ganho');
-      ctx.reply(`✅ Ganho de R$ ${valor.toFixed(2)} registrado na categoria "${categoria}"`);
+
+      let mensagem = `✅ Ganho de R$ ${valor.toFixed(2)} registrado na categoria "${categoria}"`;
+
+      // Se a confiança na classificação for baixa, indicar isso na resposta
+      if (confianca < 0.3) {
+        mensagem += `\n\n(Categorizado automaticamente com base no texto. Use "recebi de salário" para ser mais específico)`;
+      }
+
+      ctx.reply(mensagem);
     } catch (error) {
       ctx.reply('❌ Erro ao registrar ganho. Tente novamente com outro formato ou verifique a configuração da planilha.');
       console.error('Erro detalhado:', error);
     }
   } else {
     ctx.reply('❌ Não consegui identificar o valor do ganho. Por favor, tente novamente.');
+  }
+});
+
+// Processar consultas sobre gastos compartilhados
+bot.hears(/gastos compartilhados|divididos|conjuntos|com minha|com meu/i, async (ctx) => {
+  const texto = ctx.message.text;
+
+  // Se não parece ser uma consulta, ignore
+  if (!texto.match(/^quanto|^quais|^como|^qual|^total|^gastos/i)) {
+    return;
+  }
+
+  try {
+    // Adicionar flag para filtrar apenas gastos compartilhados
+    const textoModificado = texto + " compartilhados";
+    const resposta = await processarConsulta(textoModificado);
+    ctx.reply(resposta, { parse_mode: 'Markdown' });
+  } catch (error) {
+    ctx.reply('❌ Não consegui processar sua consulta sobre gastos compartilhados. Por favor, tente novamente.');
+    console.error('Erro:', error);
   }
 });
 
@@ -542,14 +745,9 @@ bot.hears(/quanto|qual o|saldo|total|resumo/i, async (ctx) => {
   }
 });
 
-
-// Adicione estas linhas no topo do arquivo depois das outras importações
-const express = require('express');
-const bodyParser = require('body-parser');
-
-// E substitua a parte do bot.launch() por isto:
+// Configurar ambiente web para webhook (em produção) ou polling (em desenvolvimento)
 if (process.env.NODE_ENV === 'production') {
-  // Modo de produção (hospedado)
+  // Modo de produção (webhook)
   const PORT = process.env.PORT || 3000;
   const app = express();
 
@@ -575,7 +773,7 @@ if (process.env.NODE_ENV === 'production') {
     console.log('URL não definida, webhook não configurado');
   }
 } else {
-  // Modo de desenvolvimento (local)
+  // Modo de desenvolvimento (polling)
   bot.launch()
     .then(() => {
       console.log('Bot iniciado localmente com sucesso!');
@@ -584,21 +782,6 @@ if (process.env.NODE_ENV === 'production') {
       console.error('Erro ao iniciar bot:', err);
     });
 }
-
-// Comente ou remova a chamada original de bot.launch() se existir
-
-
-// Iniciar o bot
-bot.launch()
-  .then(() => {
-    console.log('Bot de controle financeiro iniciado com sucesso!');
-    console.log('IMPORTANTE: Certifique-se de que sua planilha se chama "Financas" (sem acento)');
-    console.log('Acesse seu bot no Telegram e comece a usar!');
-  })
-  .catch((err) => {
-    console.error('Erro ao iniciar o bot:', err);
-    console.error('Detalhes do erro:', JSON.stringify(err, null, 2));
-  });
 
 // Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
