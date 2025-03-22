@@ -17,7 +17,8 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const categorias = {
   'mercado': ['mercado', 'supermercado', 'feira', 'frutas', 'alimentos', 'comida', 'hortifruti', 'açougue', 'padaria', 'pão', 'leite', 'carne', 'verdura', 'legume', 'cereal'],
   'transporte': ['transporte', 'gasolina', 'uber', 'táxi', '99', 'cabify', 'ônibus', 'metrô', 'combustível', 'estacionamento', 'pedágio', 'passagem', 'bilhete', 'brt', 'trem'],
-  'lazer': ['lazer', 'restaurante', 'cinema', 'teatro', 'show', 'viagem', 'bar', 'bebida', 'cerveja', 'festa', 'passeio', 'ingresso', 'parque', 'shopping', 'lanche', 'netflix', 'streaming'],
+  'restaurante': ['restaurante', 'delivery', 'ifood', 'bar'],
+  'lazer': ['lazer', 'cinema', 'teatro', 'show', 'viagem', 'festa', 'passeio', 'ingresso', 'parque', 'shopping', 'netflix', 'streaming'],
   'saúde': ['saúde', 'farmácia', 'remédio', 'médico', 'consulta', 'exame', 'hospital', 'dentista', 'terapia', 'academia', 'vitamina', 'suplemento', 'plano de saúde', 'psicólogo'],
   'educação': ['educação', 'livro', 'curso', 'escola', 'faculdade', 'mensalidade', 'material escolar', 'apostila', 'aula', 'professor', 'treinamento', 'workshop', 'certificado'],
   'moradia': ['moradia', 'aluguel', 'condomínio', 'água', 'luz', 'internet', 'gás', 'iptu', 'reforma', 'mobília', 'móveis', 'decoração', 'cama', 'sofá', 'eletrodomésticos'],
@@ -277,7 +278,7 @@ function extrairInformacoesTransacao(texto) {
       'onibus', 'ônibus', 'metro', 'metrô', 'trem', 'brt', 'vlt', 'barca', 'balsa',
       'passagem', 'bilhete', 'tarifa', 'combustível', 'combustivel', 'gasolina', 'alcool',
       'álcool', 'diesel', 'gnv', 'estacionamento', 'pedágio', 'pedagio', 'rodovia',
-      'posto', 'oficina', 'mecânico', 'mecanico', 'manutenção', 'manutencao', 'reparo'
+      'posto', 'oficina', 'mecânico', 'mecanico', 'manutenção', 'manutencxao', 'reparo'
     ],
     'lazer': [
       'lazer', 'diversão', 'diversao', 'entretenimento', 'cinema', 'teatro', 'show',
