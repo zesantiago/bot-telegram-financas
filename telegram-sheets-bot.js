@@ -1128,6 +1128,106 @@ async function processarConsulta(texto) {
   return resposta;
 }
 
+
+
+// Adicione esta variável global
+let ultimaTransacao = null;
+
+// Função para obter o ID da última transação
+async function obterIdUltimaTransacao() {
+  try {
+    const auth = await authorize();
+
+    const response = await sheets.spreadsheets.values.get({
+      auth,
+      spreadsheetId: SPREADSHEET_ID,
+      range: RANGE,
+    });
+
+    // Se a planilha estiver vazia ou só tiver o cabeçalho
+    if (!response.data.values || response.data.values.length <= 1) {
+      return null;
+    }
+
+    // O ID é a linha na planilha (considerando que a primeira linha é o cabeçalho)
+    return response.data.values.length - 1;
+  } catch (error) {
+    console.error('Erro ao obter ID da última transação:', error);
+    return null;
+  }
+}
+
+// Função para atualizar uma transação
+async function atualizarTransacao(id, campoAtualizar, novoValor) {
+  try {
+    const auth = await authorize();
+
+    // Primeiro, obtém os dados atuais da transação
+    const response = await sheets.spreadsheets.values.get({
+      auth,
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${RANGE.split('!')[0]}!A${id + 1}:I${id + 1}`, // +1 porque a linha 1 é o cabeçalho
+    });
+
+    if (!response.data.values || response.data.values.length === 0) {
+      return { sucesso: false, mensagem: 'Transação não encontrada' };
+    }
+
+    const transacaoAtual = response.data.values[0];
+
+    // Determina qual coluna atualizar com base no campo
+    let coluna;
+    switch (campoAtualizar.toLowerCase()) {
+      case 'categoria':
+        coluna = 'B'; // Coluna B é categoria
+        break;
+      case 'valor':
+        coluna = 'C'; // Coluna C é valor
+        break;
+      case 'data':
+        coluna = 'A'; // Coluna A é data
+        break;
+      case 'método':
+      case 'metodo':
+      case 'pagamento':
+        coluna = 'H'; // Coluna H é método de pagamento
+        break;
+      case 'banco':
+      case 'cartão':
+      case 'cartao':
+        coluna = 'I'; // Coluna I é banco/cartão
+        break;
+      default:
+        return { sucesso: false, mensagem: 'Campo não reconhecido' };
+    }
+
+    // Atualiza o valor
+    await sheets.spreadsheets.values.update({
+      auth,
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${RANGE.split('!')[0]}!${coluna}${id + 1}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [[novoValor]]
+      }
+    });
+
+    return {
+      sucesso: true,
+      mensagem: `✅ Transação atualizada!\n\nCampo "${campoAtualizar}" alterado para "${novoValor}".`
+    };
+  } catch (error) {
+    console.error('Erro ao atualizar transação:', error);
+    return {
+      sucesso: false,
+      mensagem: 'Erro ao atualizar transação. Por favor, tente novamente.'
+    };
+  }
+}
+
+
+
+
 // HANDLERS DO BOT (SUBSTITUÍDOS PELOS NOVOS)
 
 // Processar mensagens de gastos
@@ -1294,11 +1394,82 @@ bot.hears(/nubank|itaú|itau|bradesco|santander|banco do brasil|bb|caixa|inter|c
   }
 });
 
-// Adicionar handler para correções
+// Handler para correções
 bot.hears(/corrigir|alterar|mudar|editar/i, async (ctx) => {
-  // TODO: Implementar sistema para correções de transações
-  // Exemplo: "corrigir última categoria para lazer"
-  ctx.reply('Funcionalidade de correção em desenvolvimento!');
+  const texto = ctx.message.text.toLowerCase();
+
+  try {
+    // Padrão: "corrigir categoria para lazer"
+    // ou "mudar método de pagamento para pix"
+    const match = texto.match(/(?:corrigir|alterar|mudar|editar)\s+(\w+)(?:\s+da\s+última\s+transação|\s+do\s+último\s+gasto|\s+da\s+última\s+despesa|\s+do\s+último\s+registro)?\s+(?:para|como|por)\s+(\w+)/i);
+
+    if (!match) {
+      ctx.reply('❓ Não entendi o que você quer corrigir. Use o formato: "corrigir categoria para lazer" ou "alterar método de pagamento para pix"');
+      return;
+    }
+
+    const campo = match[1];
+    const novoValor = match[2];
+
+    // Obtém o ID da última transação
+    const id = await obterIdUltimaTransacao();
+
+    if (!id) {
+      ctx.reply('❌ Não encontrei nenhuma transação para corrigir.');
+      return;
+    }
+
+    // Processa o novo valor dependendo do campo
+    let valorProcessado = novoValor;
+
+    // Para categoria, verifica se é uma categoria válida
+    if (campo.toLowerCase() === 'categoria') {
+      // Verifica se é uma categoria válida
+      const categoriasValidas = { ...categorias, ...categoriasGanhos };
+      const categoriaEncontrada = Object.keys(categoriasValidas).find(cat =>
+        cat === novoValor.toLowerCase() ||
+        categoriasValidas[cat].some(keyword => keyword === novoValor.toLowerCase())
+      );
+
+      if (categoriaEncontrada) {
+        valorProcessado = categoriaEncontrada;
+      }
+    }
+
+    // Para método de pagamento, verifica se é um método válido
+    if (['método', 'metodo', 'pagamento'].includes(campo.toLowerCase())) {
+      const metodosValidos = Object.keys(metodosPagamento);
+      const metodoEncontrado = metodosValidos.find(met =>
+        met === novoValor.toLowerCase() ||
+        metodosPagamento[met].some(keyword => keyword === novoValor.toLowerCase())
+      );
+
+      if (metodoEncontrado) {
+        valorProcessado = metodoEncontrado;
+      }
+    }
+
+    // Para banco, verifica se é um banco válido
+    if (['banco', 'cartão', 'cartao'].includes(campo.toLowerCase())) {
+      const bancosValidos = Object.keys(bancos);
+      const bancoEncontrado = bancosValidos.find(b =>
+        b === novoValor.toLowerCase() ||
+        bancos[b].some(keyword => keyword === novoValor.toLowerCase())
+      );
+
+      if (bancoEncontrado) {
+        valorProcessado = bancoEncontrado;
+      }
+    }
+
+    // Atualiza a transação
+    const resultado = await atualizarTransacao(id, campo, valorProcessado);
+
+    ctx.reply(resultado.mensagem);
+  } catch (error) {
+    console.error('Erro ao processar correção:', error);
+    ctx.reply('❌ Erro ao processar correção. Por favor, tente novamente.');
+  }
 });
 
 // Comandos do Bot
