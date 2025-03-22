@@ -92,7 +92,370 @@ async function authorize() {
   return auth;
 }
 
-// ====== MODELO ML PARA CLASSIFICAÇÃO DE CATEGORIAS ======
+// NOVO SISTEMA DE EXTRAÇÃO DE INFORMAÇÕES
+function extrairInformacoesTransacao(texto) {
+  // Normaliza o texto: remove acentos, converte para minúsculas
+  const textoNormalizado = texto.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Estrutura para armazenar todas as informações extraídas
+  const info = {
+    valor: 0,
+    categoria: 'outros',
+    data: new Date(),
+    compartilhamento: { compartilhado: false, pessoa: null },
+    metodoPagamento: 'outros',
+    banco: '',
+    estabelecimento: '',
+    confianca: 0.5
+  };
+
+  // 1. EXTRAÇÃO DE VALOR
+  const valorMatch = texto.match(/(\d+[.,]?\d*)\s*(?:reais|reis|r\$|pila|conto)/i);
+  if (valorMatch) {
+    info.valor = parseFloat(valorMatch[1].replace(',', '.'));
+  }
+
+  // 2. EXTRAÇÃO DE DATA
+  // Padrão: "dia X", "X/Y", ou "X de [mês]"
+  const diaMatch = textoNormalizado.match(/\bdia\s+(\d{1,2})\b/) ||
+    textoNormalizado.match(/\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/) ||
+    textoNormalizado.match(/\b(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/);
+
+  if (diaMatch) {
+    const dataAtual = new Date();
+    if (diaMatch[0].includes('/')) {
+      // Formato DD/MM
+      const dia = parseInt(diaMatch[1]);
+      const mes = parseInt(diaMatch[2]) - 1; // meses em JS são 0-11
+      info.data = new Date(dataAtual.getFullYear(), mes, dia);
+    } else if (diaMatch[0].includes(' de ')) {
+      // Formato "dia X de [mês]"
+      const dia = parseInt(diaMatch[1]);
+      const meses = {
+        'janeiro': 0, 'fevereiro': 1, 'marco': 2, 'abril': 3, 'maio': 4, 'junho': 5,
+        'julho': 6, 'agosto': 7, 'setembro': 8, 'outubro': 9, 'novembro': 10, 'dezembro': 11
+      };
+      const mes = meses[diaMatch[2]];
+      info.data = new Date(dataAtual.getFullYear(), mes, dia);
+    } else {
+      // Formato "dia X"
+      const dia = parseInt(diaMatch[1]);
+      info.data.setDate(dia);
+    }
+  }
+
+  // 3. EXTRAÇÃO DE COMPARTILHAMENTO
+  // Padrões mais abrangentes para detectar compartilhamento
+  const padroesDivisao = [
+    'dividindo com', 'dividi com', 'dividido com',
+    'compartilhando com', 'compartilhei com', 'compartilhado com',
+    'com minha', 'com meu', 'junto com', 'rateado com', 'rateei com',
+    'meio a meio com', 'metade com', 'dividimos', 'compartilhamos'
+  ];
+
+  const ehCompartilhado = padroesDivisao.some(padrao => textoNormalizado.includes(padrao));
+
+  if (ehCompartilhado) {
+    info.compartilhamento.compartilhado = true;
+
+    // Identificar com quem foi compartilhado
+    const pessoasCompartilhamento = [
+      'esposa', 'mulher', 'esposo', 'marido', 'namorada', 'namorado',
+      'companheira', 'companheiro', 'conjuge', 'amiga', 'amigo',
+      'colega', 'parceira', 'parceiro', 'sogra', 'sogro', 'primo', 'prima',
+      'irmao', 'irma', 'irmã', 'irmão', 'pai', 'mae', 'mãe', 'filho', 'filha'
+    ];
+
+    for (const pessoa of pessoasCompartilhamento) {
+      if (textoNormalizado.includes(pessoa)) {
+        info.compartilhamento.pessoa = pessoa;
+        break;
+      }
+    }
+
+    // Se não identificou pessoa específica
+    if (!info.compartilhamento.pessoa) {
+      info.compartilhamento.pessoa = 'alguém';
+    }
+  }
+
+  // 4. EXTRAÇÃO DE MÉTODO DE PAGAMENTO
+  const padroesMetodos = {
+    'pix': ['pix', 'transferencia pix', 'via pix', 'pelo pix'],
+    'dinheiro': ['dinheiro', 'em especie', 'especie', 'cash', 'em maos', 'à vista', 'a vista'],
+    'cartão de crédito': ['cartao de credito', 'credito', 'no credito', 'cc', 'cartao', 'fatura'],
+    'cartão de débito': ['cartao de debito', 'debito', 'no debito', 'cd'],
+    'boleto': ['boleto', 'fatura', 'conta', 'bill', 'cobranca'],
+    'transferência': ['transferencia', 'transferencia bancaria', 'ted', 'doc', 'wire'],
+  };
+
+  for (const [metodo, padroes] of Object.entries(padroesMetodos)) {
+    if (padroes.some(padrao => textoNormalizado.includes(padrao))) {
+      info.metodoPagamento = metodo;
+      break;
+    }
+  }
+
+  // Se menciona cartão sem especificar débito, assume crédito
+  if (textoNormalizado.includes('cartao') && info.metodoPagamento === 'outros') {
+    info.metodoPagamento = 'cartão de crédito';
+  }
+
+  // 5. EXTRAÇÃO DE BANCO/CARTÃO
+  const padroesBancos = {
+    'itaú': ['itau', 'itaucard', 'do itau'],
+    'bradesco': ['bradesco', 'bradcard', 'do bradesco'],
+    'santander': ['santander', 'do santander'],
+    'banco do brasil': ['banco do brasil', 'bb', 'do bb'],
+    'caixa': ['caixa', 'caixa economica', 'da caixa'],
+    'nubank': ['nubank', 'nu', 'roxinho', 'do nubank'],
+    'inter': ['inter', 'banco inter', 'do inter'],
+    'c6': ['c6', 'c6bank', 'do c6'],
+    'xp': ['xp', 'investimentos xp'],
+    'will': ['will', 'will bank'],
+    'neon': ['neon', 'banco neon']
+  };
+
+  for (const [banco, padroes] of Object.entries(padroesBancos)) {
+    if (padroes.some(padrao => textoNormalizado.includes(padrao))) {
+      info.banco = banco;
+      break;
+    }
+  }
+
+  // 6. EXTRAÇÃO DE ESTABELECIMENTO/SERVIÇO
+  // Padrões comuns que indicam estabelecimento
+  const padroesEstabelecimento = [
+    'no', 'na', 'em', 'do', 'da', 'com', 'para', 'pelo', 'pela'
+  ];
+
+  for (const padrao of padroesEstabelecimento) {
+    const regex = new RegExp(`\\b${padrao}\\s+([\\w\\s]{2,20})\\b`, 'i');
+    const match = textoNormalizado.match(regex);
+    if (match && match[1]) {
+      // Ignora se for um banco, método de pagamento ou pessoa
+      const termo = match[1].trim();
+
+      // Verifica se não é um banco ou método
+      const ehBanco = Object.values(padroesBancos).some(b =>
+        b.some(p => p.includes(termo) || termo.includes(p))
+      );
+      const ehMetodo = Object.values(padroesMetodos).some(m =>
+        m.some(p => p.includes(termo) || termo.includes(p))
+      );
+      const ehPessoa = pessoasCompartilhamento.some(p =>
+        termo.includes(p) || p.includes(termo)
+      );
+
+      if (!ehBanco && !ehMetodo && !ehPessoa) {
+        info.estabelecimento = match[1].trim();
+        break;
+      }
+    }
+  }
+
+  // 7. CLASSIFICAÇÃO DE CATEGORIA
+  // Sistema avançado de classificação baseado em contexto e estabelecimentos
+
+  // Palavras-chave expandidas por categoria
+  const categoriasExpandidas = {
+    'mercado': [
+      'mercado', 'supermercado', 'feira', 'hortifruti', 'atacado', 'atacadao', 'atacadão',
+      'frutas', 'verduras', 'legumes', 'alimentos', 'comida', 'compras', 'mantimentos',
+      'paozinho', 'pãozinho', 'padaria', 'açougue', 'acougue', 'carnes', 'frios', 'laticínios',
+      'sacolao', 'sacolão', 'hortifruti', 'quitanda', 'mercearia'
+    ],
+    'restaurante': [
+      'restaurante', 'lanchonete', 'cafeteria', 'café', 'cafe', 'bar', 'pub',
+      'fast food', 'fastfood', 'delivery', 'entrega', 'ifood', 'uber eats', 'rappi',
+      'lanche', 'pizza', 'hamburger', 'hamburguer', 'refeição', 'refeicao', 'almoço', 'almoco',
+      'jantar', 'comida', 'petisco', 'cerveja', 'chopp', 'bebida', 'drink'
+    ],
+    'transporte': [
+      'transporte', 'uber', '99', 'taxi', 'táxi', 'cabify', 'indriver', 'carona',
+      'onibus', 'ônibus', 'metro', 'metrô', 'trem', 'brt', 'vlt', 'barca', 'balsa',
+      'passagem', 'bilhete', 'tarifa', 'combustível', 'combustivel', 'gasolina', 'alcool',
+      'álcool', 'diesel', 'gnv', 'estacionamento', 'pedágio', 'pedagio', 'rodovia',
+      'posto', 'oficina', 'mecânico', 'mecanico', 'manutenção', 'manutencao', 'reparo'
+    ],
+    'lazer': [
+      'lazer', 'diversão', 'diversao', 'entretenimento', 'cinema', 'teatro', 'show',
+      'museu', 'exposição', 'exposicao', 'ingresso', 'bilhete', 'jogo', 'futebol',
+      'parque', 'clube', 'praia', 'viagem', 'passeio', 'excursão', 'excursao', 'turismo',
+      'netflix', 'spotify', 'streaming', 'assinatura', 'livro', 'revista', 'jornal',
+      'shopping', 'loja', 'roupa', 'sapato', 'moda', 'beleza', 'maquiagem', 'perfume'
+    ],
+    'saúde': [
+      'saúde', 'saude', 'médico', 'medico', 'dentista', 'terapia', 'psicólogo', 'psicologo',
+      'psicóloga', 'nutricionista', 'fisioterapeuta', 'quiropraxia', 'acupuntura',
+      'consulta', 'exame', 'farmácia', 'farmacia', 'remédio', 'remedio', 'medicamento',
+      'hospital', 'clínica', 'clinica', 'laboratório', 'laboratorio', 'plano de saúde',
+      'convênio', 'convenio', 'ambulância', 'ambulancia', 'emergência', 'emergencia'
+    ],
+    'moradia': [
+      'moradia', 'aluguel', 'condomínio', 'condominio', 'iptu', 'água', 'agua', 'luz',
+      'energia', 'eletricidade', 'gás', 'gas', 'internet', 'wifi', 'fibra', 'telefone',
+      'celular', 'limpeza', 'manutenção', 'manutencao', 'reparo', 'reforma', 'obra',
+      'móveis', 'moveis', 'eletrodoméstico', 'eletrodomestico', 'decoração', 'decoracao',
+      'construção', 'construcao', 'marcenaria', 'pedreiro', 'eletricista', 'encanador',
+      'pintor', 'casa', 'apartamento', 'residência', 'residencia'
+    ],
+    'educação': [
+      'educação', 'educacao', 'escola', 'colégio', 'colegio', 'universidade', 'faculdade',
+      'curso', 'aula', 'professor', 'professora', 'tutor', 'tutora', 'livro', 'material',
+      'mensalidade', 'matrícula', 'matricula', 'formação', 'formacao', 'certificado',
+      'diploma', 'graduação', 'graduacao', 'pós-graduação', 'pos-graduacao', 'mestrado',
+      'doutorado', 'mba', 'treinamento', 'workshop', 'palestra', 'seminário', 'seminario'
+    ],
+    'pet': [
+      'pet', 'animal', 'cachorro', 'gato', 'passarinho', 'pássaro', 'ração', 'racao',
+      'petshop', 'pet shop', 'veterinário', 'veterinaria', 'veterinaria', 'banho', 'tosa',
+      'vacina', 'vermífugo', 'vermifugo', 'antipulgas', 'brinquedo', 'casinha', 'arranhador',
+      'aquário', 'aquario', 'remedinho', 'latido', 'miado', 'canil', 'adestrador'
+    ]
+  };
+
+  // Indicadores de contexto (estabelecimentos típicos por categoria)
+  const estabelecimentosPorCategoria = {
+    'mercado': ['extra', 'carrefour', 'pao de acucar', 'assai', 'atacadao', 'dia', 'sams', 'makro', 'walmart'],
+    'restaurante': ['mcdonalds', 'burger king', 'bk', 'subway', 'outback', 'china in box', 'spoleto', 'habib', 'pizzaria'],
+    'transporte': ['uber', '99', 'taxi', 'cabify', 'combustivel', 'ipiranga', 'shell', 'petrobras', 'br'],
+    'lazer': ['cinema', 'cinemark', 'kinoplex', 'teatro', 'parque', 'ingresso', 'show', 'livraria', 'netflix', 'disney+'],
+    'saúde': ['droga raia', 'drogasil', 'pacheco', 'pague menos', 'ultrafarma', 'onofre', 'hospital', 'clinica'],
+    'moradia': ['leroy merlin', 'c&c', 'telha norte', 'casa show', 'tok stok', 'etna', 'mobly', 'madeira'],
+    'educação': ['livraria', 'saraiva', 'cultura', 'fnac', 'estacio', 'unopar', 'unip', 'uninove', 'senac', 'senai'],
+    'pet': ['cobasi', 'petz', 'petlove', 'petshop', 'pet shop', 'dog', 'cat']
+  };
+
+  // Verificar estabelecimento primeiro
+  if (info.estabelecimento) {
+    for (const [categoria, estabelecimentos] of Object.entries(estabelecimentosPorCategoria)) {
+      if (estabelecimentos.some(e => info.estabelecimento.includes(e))) {
+        info.categoria = categoria;
+        info.confianca = 0.8;
+        break;
+      }
+    }
+  }
+
+  // Se não classificou pelo estabelecimento, verificar por palavras-chave no texto completo
+  if (info.categoria === 'outros') {
+    for (const [categoria, keywords] of Object.entries(categoriasExpandidas)) {
+      if (keywords.some(keyword => textoNormalizado.includes(keyword))) {
+        info.categoria = categoria;
+        info.confianca = 0.7;
+        break;
+      }
+    }
+  }
+
+  // Ajustes específicos para casos especiais
+
+  // Ifood geralmente é restaurante/alimentação
+  if (textoNormalizado.includes('ifood') || textoNormalizado.includes('if00d')) {
+    info.categoria = 'restaurante';
+    info.confianca = 0.9;
+  }
+
+  // Ajustar categoria baseado em contexto
+  if (textoNormalizado.includes('almoço') || textoNormalizado.includes('almoco') ||
+    textoNormalizado.includes('jantar') || textoNormalizado.includes('lanche')) {
+    info.categoria = 'restaurante';
+    info.confianca = 0.9;
+  }
+
+  // Mapeamento de categoria para as categorias principais do sistema
+  const mapeamentoCategorias = {
+    'restaurante': 'lazer', // Mapeia restaurante para lazer no sistema original
+    // Adicione outros mapeamentos necessários aqui
+  };
+
+  // Aplicar mapeamento se necessário
+  if (mapeamentoCategorias[info.categoria]) {
+    info.categoria = mapeamentoCategorias[info.categoria];
+  }
+
+  return info;
+}
+
+// NOVA FUNÇÃO PARA PROCESSAR MENSAGENS DE DESPESA
+async function processarMensagemDespesa(texto) {
+  // Extrair todas as informações com o sistema avançado
+  const informacoes = extrairInformacoesTransacao(texto);
+
+  // Se o valor for zero, não conseguiu identificar
+  if (informacoes.valor === 0) {
+    return {
+      sucesso: false,
+      mensagem: '❌ Não consegui identificar o valor da despesa. Por favor, tente novamente.'
+    };
+  }
+
+  // Registrar a transação
+  try {
+    await registrarTransacao(
+      informacoes.data,
+      informacoes.categoria,
+      informacoes.valor,
+      texto,
+      'Despesa',
+      informacoes.compartilhamento,
+      informacoes.metodoPagamento,
+      informacoes.banco
+    );
+
+    // Preparar mensagem de resposta detalhada
+    let mensagem = `✅ Despesa de R$ ${informacoes.valor.toFixed(2)} registrada\n\n` +
+      `🏷️ Categoria: ${informacoes.categoria}`;
+
+    // Adicionar estabelecimento, se identificado
+    if (informacoes.estabelecimento) {
+      mensagem += `\n🏢 Local: ${informacoes.estabelecimento}`;
+    }
+
+    // Adicionar método de pagamento, se identificado
+    if (informacoes.metodoPagamento !== 'outros') {
+      mensagem += `\n💳 Pagamento: ${informacoes.metodoPagamento}`;
+    }
+
+    // Adicionar banco, se identificado
+    if (informacoes.banco) {
+      mensagem += `\n🏦 Banco/Cartão: ${informacoes.banco}`;
+    }
+
+    // Adicionar data, se for diferente de hoje
+    const hoje = new Date();
+    if (informacoes.data.toDateString() !== hoje.toDateString()) {
+      mensagem += `\n📅 Data: ${informacoes.data.toLocaleDateString('pt-BR')}`;
+    }
+
+    // Adicionar informação sobre compartilhamento, se aplicável
+    if (informacoes.compartilhamento.compartilhado) {
+      const valorDividido = (informacoes.valor / 2).toFixed(2);
+      mensagem += `\n👥 Compartilhado com: ${informacoes.compartilhamento.pessoa}` +
+        `\n💰 Valor total: R$ ${informacoes.valor.toFixed(2)}` +
+        `\n💸 Sua parte: R$ ${valorDividido}`;
+    }
+
+    // Permite correção se necessário
+    mensagem += `\n\nSe algo não estiver correto, você pode editar usando comandos como:\n` +
+      `"corrigir categoria para lazer"`;
+
+    return {
+      sucesso: true,
+      mensagem: mensagem
+    };
+  } catch (error) {
+    console.error('Erro ao registrar despesa:', error);
+    return {
+      sucesso: false,
+      mensagem: '❌ Erro ao registrar despesa. Por favor, tente novamente.'
+    };
+  }
+}
+
+// FUNÇÕES ORIGINAIS (MANTIDAS PARA COMPATIBILIDADE)
 
 // Função para calcular similaridade entre strings (algoritmo Jaccard)
 function calcularSimilaridade(texto1, texto2) {
@@ -152,8 +515,6 @@ function classificarCategoriaML(texto, tipo) {
   };
 }
 
-// ====== PROCESSAMENTO DE GASTOS COMPARTILHADOS ======
-
 // Verifica se a transação é compartilhada e com quem
 function verificarCompartilhamento(texto) {
   texto = texto.toLowerCase();
@@ -185,8 +546,6 @@ function verificarCompartilhamento(texto) {
     pessoa: pessoaIdentificada || 'não especificado'
   };
 }
-
-// ====== PROCESSAMENTO DE MÉTODOS DE PAGAMENTO E BANCOS ======
 
 // Função para identificar método de pagamento
 function identificarMetodoPagamento(texto) {
@@ -769,13 +1128,15 @@ async function processarConsulta(texto) {
   return resposta;
 }
 
+// HANDLERS DO BOT (SUBSTITUÍDOS PELOS NOVOS)
+
 // Processar mensagens de gastos
 bot.hears(/gastei|gasto|comprei|paguei|despesa/i, async (ctx) => {
   const texto = ctx.message.text;
 
   // Verificar se é uma consulta ou um registro
   if (texto.match(/^quanto|^qual|^como|^total/i)) {
-    // É uma consulta
+    // É uma consulta - mantém o código original
     try {
       const resposta = await processarConsulta(texto);
       ctx.reply(resposta, { parse_mode: 'Markdown' });
@@ -786,70 +1147,9 @@ bot.hears(/gastei|gasto|comprei|paguei|despesa/i, async (ctx) => {
     return;
   }
 
-  // É um registro de despesa
-  const valor = extrairValor(texto);
-
-  // Verificar se é um gasto compartilhado
-  const infoCompartilhamento = verificarCompartilhamento(texto);
-
-  // Usar ML para classificar a categoria
-  const classificacaoML = classificarCategoriaML(texto, 'Despesa');
-  const categoria = classificacaoML.categoria;
-  const confianca = classificacaoML.confianca;
-
-  // Identificar método de pagamento e banco
-  const metodoPagamento = identificarMetodoPagamento(texto);
-  const banco = identificarBanco(texto);
-
-  const data = new Date();
-
-  if (valor > 0) {
-    try {
-      await registrarTransacao(
-        data,
-        categoria,
-        valor,
-        texto,
-        'Despesa',
-        infoCompartilhamento,
-        metodoPagamento,
-        banco
-      );
-
-      let mensagem = `✅ Despesa de R$ ${valor.toFixed(2)} registrada\n\n` +
-        `🏷️ Categoria: ${categoria}`;
-
-      // Adicionar método de pagamento, se identificado
-      if (metodoPagamento !== 'outros') {
-        mensagem += `\n💳 Pagamento: ${metodoPagamento}`;
-      }
-
-      // Adicionar banco, se identificado
-      if (banco !== '') {
-        mensagem += `\n🏦 Banco/Cartão: ${banco}`;
-      }
-
-      // Adicionar informação sobre compartilhamento, se aplicável
-      if (infoCompartilhamento.compartilhado) {
-        const valorDividido = (valor / 2).toFixed(2);
-        mensagem += `\n👥 Compartilhado com: ${infoCompartilhamento.pessoa}` +
-          `\n💰 Valor total: R$ ${valor.toFixed(2)}` +
-          `\n💸 Sua parte: R$ ${valorDividido}`;
-      }
-
-      // Se a confiança na classificação for baixa, indicar isso na resposta
-      if (confianca < 0.3 && !infoCompartilhamento.compartilhado) {
-        mensagem += `\n\n(Categorizado automaticamente com base no texto. Use "despesa de mercado" para ser mais específico)`;
-      }
-
-      ctx.reply(mensagem);
-    } catch (error) {
-      ctx.reply('❌ Erro ao registrar despesa. Tente novamente com outro formato ou verifique a configuração da planilha.');
-      console.error('Erro detalhado:', error);
-    }
-  } else {
-    ctx.reply('❌ Não consegui identificar o valor da despesa. Por favor, tente novamente.');
-  }
+  // É um registro de despesa - usa o novo sistema
+  const resultado = await processarMensagemDespesa(texto);
+  ctx.reply(resultado.mensagem);
 });
 
 // Processar mensagens de ganhos
@@ -918,6 +1218,7 @@ bot.hears(/recebi|ganhei|entrou|depositou|salário|salario|rendimento|recebiment
     } catch (error) {
       ctx.reply('❌ Erro ao registrar ganho. Tente novamente com outro formato ou verifique a configuração da planilha.');
       console.error('Erro detalhado:', error);
+
     }
   } else {
     ctx.reply('❌ Não consegui identificar o valor do ganho. Por favor, tente novamente.');
@@ -991,6 +1292,13 @@ bot.hears(/nubank|itaú|itau|bradesco|santander|banco do brasil|bb|caixa|inter|c
     ctx.reply('❌ Não consegui processar sua consulta. Por favor, tente novamente.');
     console.error('Erro:', error);
   }
+});
+
+// Adicionar handler para correções
+bot.hears(/corrigir|alterar|mudar|editar/i, async (ctx) => {
+  // TODO: Implementar sistema para correções de transações
+  // Exemplo: "corrigir última categoria para lazer"
+  ctx.reply('Funcionalidade de correção em desenvolvimento!');
 });
 
 // Comandos do Bot
