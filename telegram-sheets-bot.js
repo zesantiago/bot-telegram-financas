@@ -1,4 +1,4 @@
-// Bot de Controle Financeiro com ML e Gastos Compartilhados
+// Bot de Controle Financeiro com ML, Gastos Compartilhados, Métodos de Pagamento e Bancos
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { google } = require('googleapis');
@@ -36,6 +36,30 @@ const categoriasGanhos = {
   'outros': ['outros', 'diverso', 'entrada', 'recebimento']
 };
 
+// Métodos de pagamento e suas palavras-chave
+const metodosPagamento = {
+  'pix': ['pix', 'transferência pix', 'transferencia pix'],
+  'dinheiro': ['dinheiro', 'espécie', 'especie', 'cash', 'em mãos', 'em maos'],
+  'cartão de crédito': ['cartão de crédito', 'cartao de credito', 'crédito', 'credito', 'credit', 'cc', 'fatura'],
+  'cartão de débito': ['cartão de débito', 'cartao de debito', 'débito', 'debito', 'debit'],
+  'boleto': ['boleto', 'fatura', 'conta', 'bill'],
+  'transferência': ['transferência', 'transferencia', 'ted', 'doc', 'wire', 'bank transfer'],
+  'outros': ['outros']
+};
+
+// Bancos e suas palavras-chave
+const bancos = {
+  'itaú': ['itaú', 'itau', 'itaucard'],
+  'bradesco': ['bradesco', 'bradcard'],
+  'santander': ['santander'],
+  'banco do brasil': ['banco do brasil', 'bb'],
+  'caixa': ['caixa', 'caixa econômica'],
+  'nubank': ['nubank', 'nu'],
+  'inter': ['inter', 'banco inter'],
+  'c6': ['c6', 'c6bank'],
+  'outros': ['outros']
+};
+
 // Pessoas para gastos compartilhados
 const pessoasCompartilhamento = ['esposa', 'esposo', 'namorada', 'namorado', 'mulher', 'marido', 'companheiro', 'companheira', 'amigo', 'amiga', 'colega', 'parceiro', 'parceira', 'cônjuge', 'conjuge'];
 
@@ -50,7 +74,7 @@ const mesesMap = {
 // Configuração do Google Sheets
 const sheets = google.sheets({ version: 'v4' });
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-const RANGE = 'Despesas!A:G'; // Adicionada coluna G para gastos compartilhados
+const RANGE = 'Despesas!A:I'; // Atualizado para incluir método de pagamento e banco
 
 // Autenticação com o Google
 async function authorize() {
@@ -160,6 +184,53 @@ function verificarCompartilhamento(texto) {
     compartilhado: true,
     pessoa: pessoaIdentificada || 'não especificado'
   };
+}
+
+// ====== PROCESSAMENTO DE MÉTODOS DE PAGAMENTO E BANCOS ======
+
+// Função para identificar método de pagamento
+function identificarMetodoPagamento(texto) {
+  texto = texto.toLowerCase();
+
+  // Verificar métodos específicos mencionados
+  for (const [metodo, keywords] of Object.entries(metodosPagamento)) {
+    for (const keyword of keywords) {
+      if (texto.includes(keyword)) {
+        return metodo;
+      }
+    }
+  }
+
+  // Verificar padrões comuns
+  if (texto.includes('cartão') || texto.includes('cartao')) {
+    if (texto.includes('crédito') || texto.includes('credito')) {
+      return 'cartão de crédito';
+    } else if (texto.includes('débito') || texto.includes('debito')) {
+      return 'cartão de débito';
+    } else {
+      return 'cartão de crédito'; // Default para menção de cartão
+    }
+  }
+
+  // Default
+  return 'outros';
+}
+
+// Função para identificar banco ou cartão
+function identificarBanco(texto) {
+  texto = texto.toLowerCase();
+
+  // Verificar bancos específicos mencionados
+  for (const [banco, keywords] of Object.entries(bancos)) {
+    for (const keyword of keywords) {
+      if (texto.includes(keyword)) {
+        return banco;
+      }
+    }
+  }
+
+  // Default
+  return '';
 }
 
 // Extrai valor da mensagem
@@ -276,7 +347,7 @@ function extrairPeriodo(texto) {
 }
 
 // Registrar transação no Google Sheets
-async function registrarTransacao(data, categoria, valor, descricao, tipo, infoCompartilhamento = null) {
+async function registrarTransacao(data, categoria, valor, descricao, tipo, infoCompartilhamento = null, metodoPagamento = 'outros', banco = '') {
   const auth = await authorize();
   const dataFormatada = moment(data).format('DD/MM/YYYY');
 
@@ -290,8 +361,9 @@ async function registrarTransacao(data, categoria, valor, descricao, tipo, infoC
     ? `Compartilhado com ${infoCompartilhamento.pessoa}`
     : "";
 
+  // Nova estrutura incluindo método de pagamento e banco
   const values = [
-    [dataFormatada, categoria, valorRegistrado, descricao, tipo, compartilhamentoInfo, valor]
+    [dataFormatada, categoria, valorRegistrado, descricao, tipo, compartilhamentoInfo, valor, metodoPagamento, banco]
   ];
 
   const resource = {
@@ -339,7 +411,9 @@ async function obterTransacoes() {
         const descricaoCell = rows[i][3] || '';
         const tipoCell = rows[i][4] || 'Despesa'; // Default para compatibilidade
         const compartilhamentoCell = rows[i][5] || '';
-        const valorOriginalCell = rows[i][6] || valorCell; // Valor antes da divisão, se aplicável
+        const valorOriginalCell = rows[i][6] || valorCell;
+        const metodoPagamentoCell = rows[i][7] || 'outros';
+        const bancoCell = rows[i][8] || '';
 
         // Converter data do formato DD/MM/YYYY para objeto Date
         const [dia, mes, ano] = dataCell.split('/').map(num => parseInt(num));
@@ -357,7 +431,9 @@ async function obterTransacoes() {
             valorOriginal: valorOriginal,
             descricao: descricaoCell,
             tipo: tipoCell,
-            compartilhamento: compartilhamentoCell
+            compartilhamento: compartilhamentoCell,
+            metodoPagamento: metodoPagamentoCell,
+            banco: bancoCell
           });
         }
       }
@@ -371,25 +447,39 @@ async function obterTransacoes() {
 }
 
 // Filtrar transações por período, tipo e categoria
-function filtrarTransacoes(transacoes, periodo, tipo = null, categoria = null, apenasCompartilhadas = false) {
+function filtrarTransacoes(transacoes, periodo, tipo = null, categoria = null, apenasCompartilhadas = false, metodoPagamento = null, banco = null) {
   return transacoes.filter(t => {
     const dataMatch = t.data.isBetween(periodo.inicio, periodo.fim, null, '[]');
     const tipoMatch = tipo ? t.tipo === tipo : true;
     const categoriaMatch = categoria ? t.categoria === categoria.toLowerCase() : true;
     const compartilhamentoMatch = apenasCompartilhadas ? t.compartilhamento !== "" : true;
+    const metodoPagamentoMatch = metodoPagamento ? t.metodoPagamento === metodoPagamento : true;
+    const bancoMatch = banco ? t.banco === banco : true;
 
-    return dataMatch && tipoMatch && categoriaMatch && compartilhamentoMatch;
+    return dataMatch && tipoMatch && categoriaMatch && compartilhamentoMatch && metodoPagamentoMatch && bancoMatch;
   });
+}
+
+// Calcular total de transações
+function calcularTotal(transacoes) {
+  return transacoes.reduce((acc, t) => acc + t.valor, 0).toFixed(2);
+}
+
+// Calcular total original (antes da divisão) de transações
+function calcularTotalOriginal(transacoes) {
+  return transacoes.reduce((acc, t) => acc + (t.valorOriginal || t.valor), 0).toFixed(2);
 }
 
 // Analisar consulta para extrair informações relevantes
 function analisarConsulta(texto) {
   texto = texto.toLowerCase();
   let consulta = {
-    tipo: null,       // 'Ganho', 'Despesa', null (ambos)
-    categoria: null,  // categoria específica ou null (todas)
+    tipo: null,                  // 'Ganho', 'Despesa', null (ambos)
+    categoria: null,             // categoria específica ou null (todas)
     periodo: extrairPeriodo(texto),
-    apenasCompartilhadas: texto.includes('compartilhad') || texto.includes('dividid') || texto.includes('conjunt')
+    apenasCompartilhadas: texto.includes('compartilhad') || texto.includes('dividid') || texto.includes('conjunt'),
+    metodoPagamento: null,       // método de pagamento específico ou null (todos)
+    banco: null                  // banco específico ou null (todos)
   };
 
   // Determinar tipo: ganho ou despesa
@@ -405,6 +495,28 @@ function analisarConsulta(texto) {
   if (!consulta.tipo && !texto.includes('saldo') && !texto.includes('tenho')) {
     // Assumir despesa como padrão para consultas ambíguas
     consulta.tipo = 'Despesa';
+  }
+
+  // Extrair método de pagamento
+  for (const [metodo, keywords] of Object.entries(metodosPagamento)) {
+    for (const keyword of keywords) {
+      if (texto.includes(keyword)) {
+        consulta.metodoPagamento = metodo;
+        break;
+      }
+    }
+    if (consulta.metodoPagamento) break;
+  }
+
+  // Extrair banco
+  for (const [nomeBanco, keywords] of Object.entries(bancos)) {
+    for (const keyword of keywords) {
+      if (texto.includes(keyword)) {
+        consulta.banco = nomeBanco;
+        break;
+      }
+    }
+    if (consulta.banco) break;
   }
 
   // Extrair categoria
@@ -442,7 +554,9 @@ async function processarConsulta(texto) {
     consulta.periodo,
     consulta.tipo,
     consulta.categoria,
-    consulta.apenasCompartilhadas
+    consulta.apenasCompartilhadas,
+    consulta.metodoPagamento,
+    consulta.banco
   );
 
   if (transacoesFiltradas.length === 0) {
@@ -457,6 +571,14 @@ async function processarConsulta(texto) {
 
     if (consulta.categoria) {
       mensagem += ` na categoria "${consulta.categoria}"`;
+    }
+
+    if (consulta.metodoPagamento) {
+      mensagem += ` usando ${consulta.metodoPagamento}`;
+    }
+
+    if (consulta.banco) {
+      mensagem += ` do banco/cartão ${consulta.banco}`;
     }
 
     if (consulta.apenasCompartilhadas) {
@@ -486,8 +608,25 @@ async function processarConsulta(texto) {
     }
   } else {
     // Consulta de saldo
-    const ganhos = filtrarTransacoes(transacoes, consulta.periodo, 'Ganho', null, consulta.apenasCompartilhadas);
-    const despesas = filtrarTransacoes(transacoes, consulta.periodo, 'Despesa', null, consulta.apenasCompartilhadas);
+    const ganhos = filtrarTransacoes(
+      transacoes,
+      consulta.periodo,
+      'Ganho',
+      null,
+      consulta.apenasCompartilhadas,
+      consulta.metodoPagamento,
+      consulta.banco
+    );
+
+    const despesas = filtrarTransacoes(
+      transacoes,
+      consulta.periodo,
+      'Despesa',
+      null,
+      consulta.apenasCompartilhadas,
+      consulta.metodoPagamento,
+      consulta.banco
+    );
 
     const totalGanhos = calcularTotal(ganhos);
     const totalDespesas = calcularTotal(despesas);
@@ -497,13 +636,33 @@ async function processarConsulta(texto) {
     if (parseFloat(saldo) > 0) emoji = '🟢'; // Positivo
     if (parseFloat(saldo) < 0) emoji = '🔴'; // Negativo
 
-    resposta = `${emoji} *Resumo financeiro de ${consulta.periodo.desc}:*\n\n` +
+    resposta = `${emoji} *Resumo financeiro`;
+
+    if (consulta.metodoPagamento) {
+      resposta += ` (${consulta.metodoPagamento})`;
+    }
+
+    if (consulta.banco) {
+      resposta += ` (${consulta.banco})`;
+    }
+
+    resposta += ` de ${consulta.periodo.desc}:*\n\n` +
       `• Ganhos: R$ ${totalGanhos}\n` +
       `• Despesas: R$ ${totalDespesas}\n` +
       `• Saldo: R$ ${saldo}`;
 
     if (consulta.apenasCompartilhadas) {
-      resposta = `${emoji} *Resumo de gastos compartilhados em ${consulta.periodo.desc}:*\n\n` +
+      resposta = `${emoji} *Resumo de gastos compartilhados`;
+
+      if (consulta.metodoPagamento) {
+        resposta += ` (${consulta.metodoPagamento})`;
+      }
+
+      if (consulta.banco) {
+        resposta += ` (${consulta.banco})`;
+      }
+
+      resposta += ` em ${consulta.periodo.desc}:*\n\n` +
         `• Sua parte: R$ ${totalDespesas}\n` +
         `• Valor total: R$ ${calcularTotalOriginal(despesas)}`;
     }
@@ -513,6 +672,14 @@ async function processarConsulta(texto) {
 
   if (consulta.categoria) {
     resposta += ` na categoria "${consulta.categoria}"`;
+  }
+
+  if (consulta.metodoPagamento) {
+    resposta += ` usando ${consulta.metodoPagamento}`;
+  }
+
+  if (consulta.banco) {
+    resposta += ` no banco/cartão ${consulta.banco}`;
   }
 
   if (consulta.apenasCompartilhadas) {
@@ -546,6 +713,50 @@ async function processarConsulta(texto) {
       });
     }
 
+    // Adicionar resumo por método de pagamento se não filtrou por método
+    if (!consulta.metodoPagamento && transacoesFiltradas.length >= 3) {
+      const metodos = {};
+      transacoesFiltradas.forEach(t => {
+        if (t.metodoPagamento) {
+          if (!metodos[t.metodoPagamento]) metodos[t.metodoPagamento] = 0;
+          metodos[t.metodoPagamento] += t.valor;
+        }
+      });
+
+      if (Object.keys(metodos).length > 1) {
+        resposta += '\n\n*Por método de pagamento:*';
+
+        const metodosOrdenados = Object.entries(metodos)
+          .sort((a, b) => b[1] - a[1]);
+
+        metodosOrdenados.forEach(([metodo, val]) => {
+          resposta += `\n• ${metodo}: R$ ${val.toFixed(2)}`;
+        });
+      }
+    }
+
+    // Adicionar resumo por banco se não filtrou por banco
+    if (!consulta.banco && transacoesFiltradas.length >= 3) {
+      const bancos = {};
+      transacoesFiltradas.forEach(t => {
+        if (t.banco && t.banco !== '') {
+          if (!bancos[t.banco]) bancos[t.banco] = 0;
+          bancos[t.banco] += t.valor;
+        }
+      });
+
+      if (Object.keys(bancos).length > 0) {
+        resposta += '\n\n*Por banco/cartão:*';
+
+        const bancosOrdenados = Object.entries(bancos)
+          .sort((a, b) => b[1] - a[1]);
+
+        bancosOrdenados.forEach(([banco, val]) => {
+          resposta += `\n• ${banco}: R$ ${val.toFixed(2)}`;
+        });
+      }
+    }
+
     // Adicionar resumo de gastos compartilhados se relevante
     const transacoesCompartilhadas = transacoesFiltradas.filter(t => t.compartilhamento !== "");
     if (transacoesCompartilhadas.length > 0 && !consulta.apenasCompartilhadas) {
@@ -557,51 +768,6 @@ async function processarConsulta(texto) {
 
   return resposta;
 }
-
-// Calcular total de transações
-function calcularTotal(transacoes) {
-  return transacoes.reduce((acc, t) => acc + t.valor, 0).toFixed(2);
-}
-
-// Calcular total original (antes da divisão) de transações
-function calcularTotalOriginal(transacoes) {
-  return transacoes.reduce((acc, t) => acc + (t.valorOriginal || t.valor), 0).toFixed(2);
-}
-
-// Comandos do Bot
-bot.start((ctx) => {
-  ctx.reply('Bem-vindo ao Bot de Controle Financeiro! 💰\n\n' +
-    'Como usar:\n' +
-    '- Para registrar uma despesa, envie uma mensagem como:\n' +
-    '  "hoje gastei 300 reais com compras de mercado"\n\n' +
-    '- Para registrar um gasto compartilhado:\n' +
-    '  "gastei 100 reais no restaurante com minha esposa"\n\n' +
-    '- Para registrar um ganho, envie uma mensagem como:\n' +
-    '  "recebi 2000 reais de salário hoje"\n\n' +
-    '- Para consultas flexíveis:\n' +
-    '  "quanto gastei em mercado em dezembro"\n' +
-    '  "quanto ganhei de salário este mês"\n' +
-    '  "qual o saldo de março/2024"\n' +
-    '  "quanto gastei ontem"\n' +
-    '  "quanto gastei com transporte esta semana"\n' +
-    '  "quanto gastei no dia 15/03"\n' +
-    '  "gastos compartilhados do mês"\n' +
-    '  "quanto gastei com minha esposa este mês"');
-});
-
-bot.help((ctx) => {
-  ctx.reply('Comandos disponíveis:\n\n' +
-    '- Registrar despesa: "gastei X com Y"\n' +
-    '- Registrar gasto compartilhado: "gastei X com minha esposa"\n' +
-    '- Registrar ganho: "recebi X de Y"\n' +
-    '- Consultas flexíveis:\n' +
-    '  • Por período: "hoje", "ontem", "esta semana", "março", "em 2023"\n' +
-    '  • Por categoria: "em mercado", "com transporte", "de salário"\n' +
-    '  • Por tipo: "gastei", "ganhei", "saldo"\n' +
-    '  • Gastos compartilhados: "gastos compartilhados", "com minha esposa"\n' +
-    '  • Por data específica: "no dia 20/03", "em 15/12/2023"\n' +
-    '  • Combinados: "quanto gastei com mercado em dezembro"');
-});
 
 // Processar mensagens de gastos
 bot.hears(/gastei|gasto|comprei|paguei|despesa/i, async (ctx) => {
@@ -631,22 +797,44 @@ bot.hears(/gastei|gasto|comprei|paguei|despesa/i, async (ctx) => {
   const categoria = classificacaoML.categoria;
   const confianca = classificacaoML.confianca;
 
+  // Identificar método de pagamento e banco
+  const metodoPagamento = identificarMetodoPagamento(texto);
+  const banco = identificarBanco(texto);
+
   const data = new Date();
 
   if (valor > 0) {
     try {
-      await registrarTransacao(data, categoria, valor, texto, 'Despesa', infoCompartilhamento);
+      await registrarTransacao(
+        data,
+        categoria,
+        valor,
+        texto,
+        'Despesa',
+        infoCompartilhamento,
+        metodoPagamento,
+        banco
+      );
 
-      let mensagem = `✅ Despesa de R$ ${valor.toFixed(2)} registrada na categoria "${categoria}"`;
+      let mensagem = `✅ Despesa de R$ ${valor.toFixed(2)} registrada\n\n` +
+        `🏷️ Categoria: ${categoria}`;
+
+      // Adicionar método de pagamento, se identificado
+      if (metodoPagamento !== 'outros') {
+        mensagem += `\n💳 Pagamento: ${metodoPagamento}`;
+      }
+
+      // Adicionar banco, se identificado
+      if (banco !== '') {
+        mensagem += `\n🏦 Banco/Cartão: ${banco}`;
+      }
 
       // Adicionar informação sobre compartilhamento, se aplicável
       if (infoCompartilhamento.compartilhado) {
         const valorDividido = (valor / 2).toFixed(2);
-        mensagem = `✅ Despesa compartilhada registrada!\n\n` +
-          `💰 Valor total: R$ ${valor.toFixed(2)}\n` +
-          `💸 Sua parte: R$ ${valorDividido}\n` +
-          `👥 Compartilhado com: ${infoCompartilhamento.pessoa}\n` +
-          `🏷️ Categoria: ${categoria}`;
+        mensagem += `\n👥 Compartilhado com: ${infoCompartilhamento.pessoa}` +
+          `\n💰 Valor total: R$ ${valor.toFixed(2)}` +
+          `\n💸 Sua parte: R$ ${valorDividido}`;
       }
 
       // Se a confiança na classificação for baixa, indicar isso na resposta
@@ -689,13 +877,37 @@ bot.hears(/recebi|ganhei|entrou|depositou|salário|salario|rendimento|recebiment
   const categoria = classificacaoML.categoria;
   const confianca = classificacaoML.confianca;
 
+  // Identificar método de pagamento e banco
+  const metodoPagamento = identificarMetodoPagamento(texto);
+  const banco = identificarBanco(texto);
+
   const data = new Date();
 
   if (valor > 0) {
     try {
-      await registrarTransacao(data, categoria, valor, texto, 'Ganho');
+      await registrarTransacao(
+        data,
+        categoria,
+        valor,
+        texto,
+        'Ganho',
+        null,
+        metodoPagamento,
+        banco
+      );
 
-      let mensagem = `✅ Ganho de R$ ${valor.toFixed(2)} registrado na categoria "${categoria}"`;
+      let mensagem = `✅ Ganho de R$ ${valor.toFixed(2)} registrado\n\n` +
+        `🏷️ Categoria: ${categoria}`;
+
+      // Adicionar método de pagamento, se identificado
+      if (metodoPagamento !== 'outros') {
+        mensagem += `\n💳 Método: ${metodoPagamento}`;
+      }
+
+      // Adicionar banco, se identificado
+      if (banco !== '') {
+        mensagem += `\n🏦 Banco: ${banco}`;
+      }
 
       // Se a confiança na classificação for baixa, indicar isso na resposta
       if (confianca < 0.3) {
@@ -743,6 +955,82 @@ bot.hears(/quanto|qual o|saldo|total|resumo/i, async (ctx) => {
     ctx.reply('❌ Não consegui processar sua consulta. Por favor, tente novamente.');
     console.error('Erro:', error);
   }
+});
+
+// Adicionar comandos para consultas específicas por método de pagamento
+bot.hears(/cartão|cartao|crédito|credito|débito|debito|pix|dinheiro|boleto|transferência|transferencia/i, async (ctx) => {
+  const texto = ctx.message.text;
+
+  // Se não parece ser uma consulta, ignore
+  if (!texto.match(/^quanto|^quais|^como|^qual|^total|^gastos/i)) {
+    return;
+  }
+
+  try {
+    const resposta = await processarConsulta(texto);
+    ctx.reply(resposta, { parse_mode: 'Markdown' });
+  } catch (error) {
+    ctx.reply('❌ Não consegui processar sua consulta. Por favor, tente novamente.');
+    console.error('Erro:', error);
+  }
+});
+
+// Adicionar comandos para consultas específicas por banco
+bot.hears(/nubank|itaú|itau|bradesco|santander|banco do brasil|bb|caixa|inter|c6/i, async (ctx) => {
+  const texto = ctx.message.text;
+
+  // Se não parece ser uma consulta, ignore
+  if (!texto.match(/^quanto|^quais|^como|^qual|^total|^gastos/i)) {
+    return;
+  }
+
+  try {
+    const resposta = await processarConsulta(texto);
+    ctx.reply(resposta, { parse_mode: 'Markdown' });
+  } catch (error) {
+    ctx.reply('❌ Não consegui processar sua consulta. Por favor, tente novamente.');
+    console.error('Erro:', error);
+  }
+});
+
+// Comandos do Bot
+bot.start((ctx) => {
+  ctx.reply('Bem-vindo ao Bot de Controle Financeiro! 💰\n\n' +
+    'Como usar:\n' +
+    '- Para registrar uma despesa, envie uma mensagem como:\n' +
+    '  "hoje gastei 300 reais com compras de mercado pelo pix"\n\n' +
+    '- Para registrar um gasto compartilhado:\n' +
+    '  "gastei 100 reais no restaurante com minha esposa no cartão de crédito do itaú"\n\n' +
+    '- Para registrar um ganho, envie uma mensagem como:\n' +
+    '  "recebi 2000 reais de salário hoje no banco inter"\n\n' +
+    '- Para consultas flexíveis:\n' +
+    '  "quanto gastei em mercado em dezembro"\n' +
+    '  "quanto gastei no pix este mês"\n' +
+    '  "quanto usei o cartão de crédito do nubank"\n' +
+    '  "qual o saldo de março/2024"\n' +
+    '  "quanto gastei ontem"\n' +
+    '  "quanto gastei com transporte esta semana"\n' +
+    '  "quanto gastei no dia 15/03"\n' +
+    '  "gastos compartilhados do mês"\n' +
+    '  "quanto gastei com minha esposa este mês"');
+});
+
+bot.help((ctx) => {
+  ctx.reply('Comandos disponíveis:\n\n' +
+    '- Registrar despesa: "gastei X com Y"\n' +
+    '- Especificar método: "gastei X com Y no pix"\n' +
+    '- Especificar banco/cartão: "gastei X com Y no cartão nubank"\n' +
+    '- Registrar gasto compartilhado: "gastei X com minha esposa"\n' +
+    '- Registrar ganho: "recebi X de Y"\n' +
+    '- Consultas flexíveis:\n' +
+    '  • Por período: "hoje", "ontem", "esta semana", "março", "em 2023"\n' +
+    '  • Por categoria: "em mercado", "com transporte", "de salário"\n' +
+    '  • Por método: "no pix", "cartão de crédito", "em dinheiro"\n' +
+    '  • Por banco: "nubank", "itaú", "banco do brasil"\n' +
+    '  • Por tipo: "gastei", "ganhei", "saldo"\n' +
+    '  • Gastos compartilhados: "gastos compartilhados", "com minha esposa"\n' +
+    '  • Por data específica: "no dia 20/03", "em 15/12/2023"\n' +
+    '  • Combinados: "quanto gastei com mercado no pix em dezembro"');
 });
 
 // Configurar ambiente web para webhook (em produção) ou polling (em desenvolvimento)
